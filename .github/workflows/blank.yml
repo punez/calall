@@ -1,0 +1,71 @@
+name: Ultimate TCP Checker
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */3 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Load Config
+        run: |
+          source config.env
+          echo "LIMIT=$LIMIT" >> $GITHUB_ENV
+          echo "TIMEOUT=$TIMEOUT" >> $GITHUB_ENV
+          echo "CONCURRENCY=$CONCURRENCY" >> $GITHUB_ENV
+          echo "$SUB_URLS" > workers.txt
+
+      - name: Install tools
+        run: sudo apt update && sudo apt install -y curl
+
+      - name: Download & Merge
+        run: |
+          rm -f merged.txt
+          touch merged.txt
+          while read url; do
+            [ -z "$url" ] && continue
+            echo "Downloading $url"
+            curl -L -s "$url" >> merged.txt
+            echo "" >> merged.txt
+          done < workers.txt
+
+      - name: Limit
+        run: |
+          head -n $LIMIT merged.txt > limited.txt
+
+      - name: Parallel TCP Test (Keep Full Config)
+        run: |
+          rm -f working.txt
+          touch working.txt
+
+          cat limited.txt | xargs -I {} -P $CONCURRENCY bash -c '
+            line="{}"
+            hp=$(echo "$line" | grep -oE "[a-zA-Z0-9\.-]+:[0-9]+" | head -n1)
+
+            if [ -n "$hp" ]; then
+              host=$(echo $hp | cut -d":" -f1)
+              port=$(echo $hp | cut -d":" -f2)
+
+              timeout '"$TIMEOUT"' bash -c "cat < /dev/null > /dev/tcp/$host/$port" 2>/dev/null && echo "$line" >> working.txt
+            fi
+          ' || true
+
+      - name: Remove Duplicates
+        run: |
+          sort -u working.txt -o working.txt
+
+      - name: Commit
+        run: |
+          git config --global user.name "bot"
+          git config --global user.email "bot@github.com"
+          git add working.txt
+          git commit -m "update working configs" || echo "No changes"
+          git push || true
